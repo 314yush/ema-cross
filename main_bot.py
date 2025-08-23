@@ -118,41 +118,161 @@ def send_notification(message, symbol):
     return ios_sent or telegram_sent
 
 def analyze_markets():
-    """Analyze markets for EMA crossover signals"""
+    """Analyze markets for real EMA crossover signals"""
     global last_analysis_time, analysis_count
     
     try:
-        logger.info("Starting market analysis...")
+        logger.info("Starting real market analysis...")
         start_time = time.time()
         
-        # Simulate market analysis (replace with actual logic)
+        # Analyze each symbol for EMA crossovers
         for symbol in CRYPTO_PAIRS + FOREX_PAIRS:
-            # Simulate signal detection
-            import random
-            if random.random() < 0.1:  # 10% chance of signal
-                signal_type = "BULLISH" if random.random() < 0.5 else "BEARISH"
-                price = round(random.uniform(100, 50000), 2)
+            try:
+                # Fetch real market data
+                market_data = fetch_market_data(symbol)
+                if market_data is None or len(market_data) < 50:
+                    logger.warning(f"Insufficient data for {symbol}, skipping")
+                    continue
                 
-                message = f"🚨 {signal_type} SIGNAL DETECTED!\n\n"
-                message += f"Symbol: {symbol}\n"
-                message += f"Price: ${price}\n"
-                message += f"Signal: {signal_type} EMA Crossover\n"
-                message += f"Time: {datetime.now().strftime('%H:%M UTC')}\n\n"
-                message += f"💡 ACTION: {'BUY' if signal_type == 'BULLISH' else 'SELL'} {symbol}"
+                # Calculate EMAs
+                ema_9 = calculate_ema(market_data, 9)
+                ema_20 = calculate_ema(market_data, 20)
                 
-                if send_notification(message, symbol):
-                    logger.info(f"Signal notification sent for {symbol}")
-                else:
-                    logger.warning(f"Failed to send signal notification for {symbol}")
+                if ema_9 is None or ema_20 is None:
+                    logger.warning(f"Failed to calculate EMAs for {symbol}")
+                    continue
+                
+                # Get current and previous EMA values
+                current_ema_9 = ema_9[-1]
+                current_ema_20 = ema_20[-1]
+                prev_ema_9 = ema_9[-2]
+                prev_ema_20 = ema_20[-2]
+                
+                # Check for EMA crossover
+                crossover_signal = detect_ema_crossover(
+                    prev_ema_9, prev_ema_20, 
+                    current_ema_9, current_ema_20
+                )
+                
+                if crossover_signal:
+                    signal_type, strength = crossover_signal
+                    current_price = market_data['close'].iloc[-1]
+                    
+                    # Create detailed notification message
+                    message = create_signal_message(
+                        symbol, signal_type, current_price, 
+                        current_ema_9, current_ema_20, strength
+                    )
+                    
+                    # Send notification
+                    if send_notification(message, symbol):
+                        logger.info(f"EMA crossover signal sent for {symbol}: {signal_type}")
+                    else:
+                        logger.warning(f"Failed to send signal notification for {symbol}")
+                
+            except Exception as e:
+                logger.error(f"Error analyzing {symbol}: {e}")
+                continue
         
         last_analysis_time = datetime.now()
         analysis_count += 1
         
         duration = time.time() - start_time
-        logger.info(f"Market analysis completed in {duration:.2f}s")
+        logger.info(f"Real market analysis completed in {duration:.2f}s")
         
     except Exception as e:
         logger.error(f"Market analysis error: {e}")
+
+def fetch_market_data(symbol):
+    """Fetch real market data for analysis"""
+    try:
+        import yfinance as yf
+        
+        # Fetch 15-minute data for the last 100 periods
+        ticker = yf.Ticker(symbol)
+        data = ticker.history(period="7d", interval="15m")
+        
+        if data.empty or len(data) < 50:
+            logger.warning(f"Insufficient data for {symbol}")
+            return None
+        
+        return data
+        
+    except Exception as e:
+        logger.error(f"Failed to fetch data for {symbol}: {e}")
+        return None
+
+def calculate_ema(data, period):
+    """Calculate Exponential Moving Average"""
+    try:
+        if len(data) < period:
+            return None
+        
+        # Calculate EMA using pandas
+        ema = data['Close'].ewm(span=period, adjust=False).mean()
+        return ema.values
+        
+    except Exception as e:
+        logger.error(f"EMA calculation error: {e}")
+        return None
+
+def detect_ema_crossover(prev_ema_9, prev_ema_20, current_ema_9, current_ema_20):
+    """Detect EMA crossover signals"""
+    try:
+        # Check for bullish crossover (EMA 9 crosses above EMA 20)
+        if prev_ema_9 <= prev_ema_20 and current_ema_9 > current_ema_20:
+            # Calculate crossover strength
+            strength = abs(current_ema_9 - current_ema_20) / current_ema_20 * 100
+            return ("BULLISH", strength)
+        
+        # Check for bearish crossover (EMA 9 crosses below EMA 20)
+        elif prev_ema_9 >= prev_ema_20 and current_ema_9 < current_ema_20:
+            # Calculate crossover strength
+            strength = abs(current_ema_9 - current_ema_20) / current_ema_20 * 100
+            return ("BEARISH", strength)
+        
+        return None
+        
+    except Exception as e:
+        logger.error(f"EMA crossover detection error: {e}")
+        return None
+
+def create_signal_message(symbol, signal_type, price, ema_9, ema_20, strength):
+    """Create detailed signal notification message"""
+    try:
+        # Format price based on symbol type
+        if "USDT" in symbol:
+            price_str = f"${price:.4f}"
+        else:
+            price_str = f"${price:.6f}"
+        
+        # Format strength
+        strength_str = f"{strength:.2f}%"
+        
+        # Create message
+        message = f"🚨 {signal_type} EMA CROSSOVER SIGNAL!\n\n"
+        message += f"Symbol: {symbol}\n"
+        message += f"Price: {price_str}\n"
+        message += f"Signal: {signal_type} EMA Crossover\n"
+        message += f"EMA 9: ${ema_9:.4f}\n"
+        message += f"EMA 20: ${ema_20:.4f}\n"
+        message += f"Separation: {strength_str}\n"
+        message += f"Time: {datetime.now().strftime('%H:%M UTC')}\n\n"
+        
+        if signal_type == "BULLISH":
+            message += "💚 BULLISH SIGNAL - EMA 9 crossed above EMA 20\n"
+            message += "💡 ACTION: Consider BUYING " + symbol
+        else:
+            message += "🔴 BEARISH SIGNAL - EMA 9 crossed below EMA 20\n"
+            message += "💡 ACTION: Consider SELLING " + symbol
+        
+        message += f"\n\n⚠️  This is not financial advice. Always do your own research."
+        
+        return message
+        
+    except Exception as e:
+        logger.error(f"Error creating signal message: {e}")
+        return f"EMA Crossover Signal: {signal_type} for {symbol}"
 
 def keep_alive_ping():
     """Keep the bot alive and prevent Render from sleeping"""
@@ -323,6 +443,30 @@ def test_notification():
         "timestamp": datetime.now().isoformat()
     })
 
+@app.route('/test-analysis')
+def test_analysis():
+    """Test market analysis and EMA crossover detection"""
+    try:
+        logger.info("Manual analysis test requested")
+        
+        # Run a single analysis cycle
+        analyze_markets()
+        
+        return jsonify({
+            "message": "Market analysis test completed",
+            "analysis_count": analysis_count,
+            "last_analysis": last_analysis_time.isoformat() if last_analysis_time else None,
+            "timestamp": datetime.now().isoformat()
+        })
+        
+    except Exception as e:
+        logger.error(f"Analysis test failed: {e}")
+        return jsonify({
+            "message": "Analysis test failed",
+            "error": str(e),
+            "timestamp": datetime.now().isoformat()
+        }), 500
+
 @app.route('/webhook/ios', methods=['GET', 'POST'])
 def ios_webhook():
     """iOS webhook endpoint"""
@@ -363,6 +507,7 @@ def root():
             "/initialize": "Manual initialization",
             "/status": "Bot status",
             "/test-notification": "Test notifications",
+            "/test-analysis": "Test market analysis",
             "/webhook/ios": "iOS webhook"
         },
         "timestamp": datetime.now().isoformat()
