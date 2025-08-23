@@ -59,7 +59,7 @@ BINANCE_SECRET_KEY = os.getenv("BINANCE_SECRET_KEY", "")
 
 # Analysis Schedule
 ANALYSIS_INTERVAL_MINUTES = 15
-KEEP_ALIVE_INTERVAL_MINUTES = 2
+KEEP_ALIVE_INTERVAL_MINUTES = 1  # Ping every minute to keep Render awake
 
 # Logging Configuration
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")

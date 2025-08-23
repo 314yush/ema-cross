@@ -129,9 +129,22 @@ def analyze_markets():
 def keep_alive_ping():
     """Send keep-alive ping to prevent Render from sleeping"""
     try:
-        # This endpoint will be called by external monitoring service
-        # or by the bot itself to maintain wakefulness
+        # Internal keep-alive ping
         logger.debug("Keep-alive ping sent")
+        
+        # External ping to keep Render awake (every minute)
+        try:
+            # Ping our own health endpoint to keep the service active
+            import requests
+            health_url = "https://ema-cross.onrender.com/health"
+            response = requests.get(health_url, timeout=10)
+            if response.status_code == 200:
+                logger.debug("External keep-alive ping successful")
+            else:
+                logger.warning(f"External keep-alive ping returned status {response.status_code}")
+        except Exception as ping_error:
+            logger.debug(f"External keep-alive ping failed (expected during startup): {ping_error}")
+        
         return True
     except Exception as e:
         logger.error(f"Keep-alive ping failed: {e}")
@@ -193,6 +206,15 @@ def health_check():
     except Exception as e:
         logger.error(f"Health check failed: {e}")
         return jsonify({"status": "unhealthy", "error": str(e)}), 500
+
+@app.route('/ping')
+def ping():
+    """Simple ping endpoint for keep-alive services"""
+    return jsonify({
+        "message": "pong",
+        "timestamp": datetime.now().isoformat(),
+        "status": "alive"
+    })
 
 @app.route('/status')
 def bot_status():
@@ -373,6 +395,7 @@ def root():
         "description": "Automated trading signal generator with EMA crossover strategy",
         "endpoints": {
             "/health": "Health check and keep-alive",
+            "/ping": "Simple ping for keep-alive services",
             "/status": "Bot status and market summary",
             "/test-notification": "Test notification system",
             "/test-ios": "Test iOS Shortcuts specifically",
