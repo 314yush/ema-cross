@@ -281,6 +281,51 @@ def test_ios():
         logger.error(f"iOS test failed: {e}")
         return jsonify({"error": str(e)}), 500
 
+@app.route('/webhook/ios', methods=['POST', 'GET'])
+def ios_webhook():
+    """Production iOS webhook endpoint for notifications"""
+    try:
+        if not notification_manager:
+            return jsonify({"error": "Notification manager not initialized"}), 500
+        
+        # Handle GET request (for testing)
+        if request.method == 'GET':
+            return jsonify({
+                "message": "iOS Webhook endpoint active",
+                "status": "ready",
+                "endpoint": "/webhook/ios",
+                "methods": ["GET", "POST"],
+                "timestamp": datetime.now().isoformat()
+            })
+        
+        # Handle POST request (for actual notifications)
+        data = request.get_json() or {}
+        
+        # Extract notification data
+        message = data.get('message', 'Trading signal received')
+        signal_type = data.get('signal_type', 'alert')
+        priority = data.get('priority', 'medium')
+        price = data.get('price')
+        
+        # Send notification via iOS Shortcuts
+        success = notification_manager.ios_notifier.send_notification(
+            message=message,
+            signal_type=signal_type,
+            priority=priority,
+            price=price
+        )
+        
+        return jsonify({
+            "message": "iOS notification sent",
+            "success": success,
+            "data_received": data,
+            "timestamp": datetime.now().isoformat()
+        })
+        
+    except Exception as e:
+        logger.error(f"iOS webhook failed: {e}")
+        return jsonify({"error": str(e)}), 500
+
 @app.route('/notification-status')
 def notification_status():
     """Get notification system health status"""
@@ -331,6 +376,7 @@ def root():
             "/status": "Bot status and market summary",
             "/test-notification": "Test notification system",
             "/test-ios": "Test iOS Shortcuts specifically",
+            "/webhook/ios": "Production iOS webhook endpoint",
             "/notification-status": "Notification system health",
             "/clear-cooldown/<symbol>": "Clear cooldown for testing"
         },
