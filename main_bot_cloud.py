@@ -46,6 +46,24 @@ analysis_count = 0
 error_count = 0
 is_running = False
 
+# Bot initialization flag
+bot_initialized = False
+
+@app.before_first_request
+def initialize_bot_on_first_request():
+    """Initialize bot components on first request (for gunicorn compatibility)"""
+    global bot_initialized, bot_start_time
+    
+    if not bot_initialized:
+        logger.info("Initializing bot on first request...")
+        if initialize_bot():
+            bot_start_time = datetime.now()
+            start_background_tasks()
+            bot_initialized = True
+            logger.info("Bot initialized successfully on first request")
+        else:
+            logger.error("Bot initialization failed on first request")
+
 def initialize_bot():
     """Initialize all bot components"""
     global data_fetcher, technical_indicators, alert_manager, notification_manager
@@ -215,6 +233,48 @@ def ping():
         "timestamp": datetime.now().isoformat(),
         "status": "alive"
     })
+
+@app.route('/initialize')
+def manual_initialize():
+    """Manually trigger bot initialization"""
+    global bot_initialized, bot_start_time
+    
+    try:
+        if bot_initialized:
+            return jsonify({
+                "message": "Bot already initialized",
+                "status": "ready",
+                "uptime_seconds": int((datetime.now() - bot_start_time).total_seconds()) if bot_start_time else 0,
+                "timestamp": datetime.now().isoformat()
+            })
+        
+        logger.info("Manual initialization requested...")
+        if initialize_bot():
+            bot_start_time = datetime.now()
+            start_background_tasks()
+            bot_initialized = True
+            logger.info("Manual bot initialization successful")
+            
+            return jsonify({
+                "message": "Bot initialized successfully",
+                "status": "initialized",
+                "timestamp": datetime.now().isoformat()
+            })
+        else:
+            logger.error("Manual bot initialization failed")
+            return jsonify({
+                "message": "Bot initialization failed",
+                "status": "failed",
+                "timestamp": datetime.now().isoformat()
+            }), 500
+            
+    except Exception as e:
+        logger.error(f"Manual initialization failed: {e}")
+        return jsonify({
+            "message": f"Initialization error: {str(e)}",
+            "status": "error",
+            "timestamp": datetime.now().isoformat()
+        }), 500
 
 @app.route('/status')
 def bot_status():
@@ -396,6 +456,7 @@ def root():
         "endpoints": {
             "/health": "Health check and keep-alive",
             "/ping": "Simple ping for keep-alive services",
+            "/initialize": "Manually initialize bot components",
             "/status": "Bot status and market summary",
             "/test-notification": "Test notification system",
             "/test-ios": "Test iOS Shortcuts specifically",
