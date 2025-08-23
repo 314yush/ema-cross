@@ -49,7 +49,7 @@ is_running = False
 # Bot initialization flag
 bot_initialized = False
 
-@app.before_first_request
+# Flask 3.x compatible initialization
 def initialize_bot_on_first_request():
     """Initialize bot components on first request (for gunicorn compatibility)"""
     global bot_initialized, bot_start_time
@@ -63,6 +63,14 @@ def initialize_bot_on_first_request():
             logger.info("Bot initialized successfully on first request")
         else:
             logger.error("Bot initialization failed on first request")
+
+# Use Flask 3.x compatible approach
+@app.before_request
+def check_and_initialize():
+    """Check and initialize bot before each request"""
+    global bot_initialized
+    if not bot_initialized:
+        initialize_bot_on_first_request()
 
 def initialize_bot():
     """Initialize all bot components"""
