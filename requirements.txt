@@ -1,11 +1,4 @@
-Flask>=3.1.0
-requests>=2.32.0
-pandas>=2.3.0
-numpy>=2.3.0
-python-binance>=1.0.29
-yfinance>=0.2.65
-schedule>=1.2.2
-python-dotenv>=1.1.1
-gunicorn>=23.0.0
-setuptools>=80.9.0
-wheel>=0.45.0
+Flask>=3.0.0
+requests>=2.31.0
+schedule>=1.2.0
+gunicorn>=21.0.0
