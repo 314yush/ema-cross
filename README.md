@@ -13,10 +13,16 @@ A **simple, reliable, and production-ready** trading bot that monitors cryptocur
 ## 🎯 **Key Features**
 
 ### **Market Monitoring**
-- **Crypto**: BTC/USDT, ETH/USDT, SOL/USDT, XRP/USDT
+- **Crypto**: BTC, ETH, SOL, XRP (USD pairs)
 - **Forex**: EUR/USD, USD/JPY, GBP/USD
 - **Analysis**: Every 15 minutes
 - **Signals**: Bullish/Bearish EMA crossovers
+
+### **Data Sources** (Global Access)
+- **Alpha Vantage**: Primary data source (free tier available)
+- **Yahoo Finance**: Reliable fallback for all assets
+- **CoinGecko**: Crypto-specific fallback
+- **Simulated Data**: Last resort to keep bot running
 
 ### **Notifications**
 - **iOS Shortcuts**: Direct webhook integration
@@ -59,6 +65,7 @@ A **simple, reliable, and production-ready** trading bot that monitors cryptocur
 | `/status` | GET | Comprehensive bot status |
 | `/initialize` | GET | Manual bot initialization |
 | `/test-notification` | GET | Test notification system |
+| `/test-analysis` | GET | Test market analysis |
 | `/webhook/ios` | GET/POST | iOS Shortcuts webhook |
 
 ## 🌐 **Environment Variables**
@@ -70,8 +77,7 @@ TELEGRAM_BOT_TOKEN=your_telegram_bot_token
 TELEGRAM_CHAT_ID=your_telegram_chat_id
 
 # Optional
-BINANCE_API_KEY=your_binance_api_key
-BINANCE_SECRET_KEY=your_binance_secret_key
+ALPHA_VANTAGE_API_KEY=your_alpha_vantage_api_key
 PORT=8000
 DEBUG=false
 LOG_LEVEL=INFO
@@ -90,16 +96,17 @@ LOG_LEVEL=INFO
 1. **Bot starts** and initializes background tasks
 2. **Every minute**: Keep-alive ping prevents sleep
 3. **Every 15 minutes**: Market analysis runs
-4. **When signal detected**: Notification sent immediately
-5. **Cooldown applied**: Prevents duplicate alerts
+4. **Data fetching**: Tries multiple sources with fallbacks
+5. **When signal detected**: Notification sent immediately
+6. **Cooldown applied**: Prevents duplicate alerts
 
 ## 🎉 **Benefits**
 
 - ✅ **Simple**: Single file, easy to understand
 - ✅ **Reliable**: Robust error handling and recovery
+- ✅ **Global**: Works from any location (no geo-restrictions)
 - ✅ **Fast**: Minimal dependencies, quick startup
-- ✅ **Scalable**: Easy to add new features
-- ✅ **Production-ready**: Optimized for cloud deployment
+- ✅ **Robust**: Multiple data source fallbacks
 
 ## 🔍 **Monitoring**
 
