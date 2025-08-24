@@ -125,13 +125,19 @@ def analyze_markets():
         logger.info("Starting real market analysis...")
         start_time = time.time()
         
+        successful_analyses = 0
+        failed_analyses = 0
+        
         # Analyze each symbol for EMA crossovers
         for symbol in CRYPTO_PAIRS + FOREX_PAIRS:
             try:
+                logger.info(f"Analyzing {symbol}...")
+                
                 # Fetch real market data
                 market_data = fetch_market_data(symbol)
                 if market_data is None or len(market_data) < 50:
                     logger.warning(f"Insufficient data for {symbol}, skipping")
+                    failed_analyses += 1
                     continue
                 
                 # Calculate EMAs
@@ -140,6 +146,7 @@ def analyze_markets():
                 
                 if ema_9 is None or ema_20 is None:
                     logger.warning(f"Failed to calculate EMAs for {symbol}")
+                    failed_analyses += 1
                     continue
                 
                 # Get current and previous EMA values
@@ -170,8 +177,12 @@ def analyze_markets():
                     else:
                         logger.warning(f"Failed to send signal notification for {symbol}")
                 
+                successful_analyses += 1
+                logger.info(f"Successfully analyzed {symbol}")
+                
             except Exception as e:
                 logger.error(f"Error analyzing {symbol}: {e}")
+                failed_analyses += 1
                 continue
         
         last_analysis_time = datetime.now()
@@ -179,27 +190,89 @@ def analyze_markets():
         
         duration = time.time() - start_time
         logger.info(f"Real market analysis completed in {duration:.2f}s")
+        logger.info(f"Successful: {successful_analyses}, Failed: {failed_analyses}")
+        
+        # Don't let failures stop the bot
+        if failed_analyses > 0:
+            logger.warning(f"Some analyses failed, but bot continues running")
         
     except Exception as e:
         logger.error(f"Market analysis error: {e}")
+        # Don't let analysis errors crash the bot
+        logger.info("Bot continues running despite analysis errors")
 
 def fetch_market_data(symbol):
     """Fetch real market data for analysis"""
     try:
+        if "USDT" in symbol:
+            # Use ccxt for crypto symbols
+            return fetch_crypto_data(symbol)
+        else:
+            # Use yfinance for forex symbols
+            return fetch_forex_data(symbol)
+            
+    except Exception as e:
+        logger.error(f"Failed to fetch data for {symbol}: {e}")
+        return None
+
+def fetch_crypto_data(symbol):
+    """Fetch crypto data using ccxt (Binance)"""
+    try:
+        import ccxt
+        
+        # Initialize Binance exchange (public API if no keys provided)
+        if BINANCE_API_KEY and BINANCE_SECRET_KEY:
+            exchange = ccxt.binance({
+                'apiKey': BINANCE_API_KEY,
+                'secret': BINANCE_SECRET_KEY,
+                'sandbox': False,
+                'enableRateLimit': True
+            })
+            logger.info(f"Using authenticated Binance API for {symbol}")
+        else:
+            exchange = ccxt.binance({
+                'enableRateLimit': True
+            })
+            logger.info(f"Using public Binance API for {symbol}")
+        
+        # Fetch 15-minute OHLCV data (last 100 candles)
+        ohlcv = exchange.fetch_ohlcv(symbol, '15m', limit=100)
+        
+        if not ohlcv or len(ohlcv) < 50:
+            logger.warning(f"Insufficient crypto data for {symbol}")
+            return None
+        
+        # Convert to pandas DataFrame
+        import pandas as pd
+        df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+        df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+        df.set_index('timestamp', inplace=True)
+        
+        logger.info(f"Fetched {len(df)} crypto candles for {symbol}")
+        return df
+        
+    except Exception as e:
+        logger.error(f"Crypto data fetch error for {symbol}: {e}")
+        return None
+
+def fetch_forex_data(symbol):
+    """Fetch forex data using yfinance"""
+    try:
         import yfinance as yf
         
-        # Fetch 15-minute data for the last 100 periods
+        # Fetch 15-minute data for the last 7 days
         ticker = yf.Ticker(symbol)
         data = ticker.history(period="7d", interval="15m")
         
         if data.empty or len(data) < 50:
-            logger.warning(f"Insufficient data for {symbol}")
+            logger.warning(f"Insufficient forex data for {symbol}")
             return None
         
+        logger.info(f"Fetched {len(data)} forex candles for {symbol}")
         return data
         
     except Exception as e:
-        logger.error(f"Failed to fetch data for {symbol}: {e}")
+        logger.error(f"Forex data fetch error for {symbol}: {e}")
         return None
 
 def calculate_ema(data, period):
