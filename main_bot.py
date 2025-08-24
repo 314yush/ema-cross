@@ -115,6 +115,139 @@ def send_notification(message, symbol):
     
     return ios_sent or telegram_sent
 
+def detect_choch(data, lookback_periods=10):
+    """Detect Change of Character (CHOCH) with volume confirmation"""
+    try:
+        if len(data) < lookback_periods + 5:
+            return None, 0
+        
+        # Get recent data for analysis
+        recent_data = data.tail(lookback_periods + 5)
+        
+        # Calculate average volume for comparison
+        avg_volume = recent_data['volume'].mean()
+        
+        # Look for momentum changes in the last 5-10 periods
+        highs = recent_data['high'].tail(5)
+        lows = recent_data['low'].tail(5)
+        
+        # Check for higher highs and higher lows (bullish momentum)
+        bullish_momentum = all(highs.iloc[i] >= highs.iloc[i-1] for i in range(1, len(highs)))
+        bullish_momentum &= all(lows.iloc[i] >= lows.iloc[i-1] for i in range(1, len(lows)))
+        
+        # Check for lower highs and lower lows (bearish momentum)
+        bearish_momentum = all(highs.iloc[i] <= highs.iloc[i-1] for i in range(1, len(highs)))
+        bearish_momentum &= all(lows.iloc[i] <= lows.iloc[i-1] for i in range(1, len(lows)))
+        
+        # Check volume confirmation (1.5x average)
+        current_volume = data['volume'].iloc[-1]
+        volume_confirmed = current_volume >= (avg_volume * 1.5)
+        
+        if bullish_momentum and volume_confirmed:
+            return "BULLISH", 1.0
+        elif bearish_momentum and volume_confirmed:
+            return "BEARISH", 1.0
+        elif bullish_momentum or bearish_momentum:
+            return "BULLISH" if bullish_momentum else "BEARISH", 0.5
+        else:
+            return None, 0
+            
+    except Exception as e:
+        logger.error(f"CHOCH detection error: {e}")
+        return None, 0
+
+def detect_bos(data, lookback_periods=20, price_threshold=0.01):
+    """Detect Break of Structure (BOS) using fractal swing analysis"""
+    try:
+        if len(data) < lookback_periods + 10:
+            return None, 0
+        
+        # Get data for structure analysis
+        structure_data = data.tail(lookback_periods + 10)
+        
+        # Find swing highs and lows (fractals)
+        swing_highs = []
+        swing_lows = []
+        
+        for i in range(2, len(structure_data) - 2):
+            # Swing high: higher than 2 bars before and after
+            if (structure_data['high'].iloc[i] > structure_data['high'].iloc[i-1] and 
+                structure_data['high'].iloc[i] > structure_data['high'].iloc[i-2] and
+                structure_data['high'].iloc[i] > structure_data['high'].iloc[i+1] and
+                structure_data['high'].iloc[i] > structure_data['high'].iloc[i+2]):
+                swing_highs.append((i, structure_data['high'].iloc[i]))
+            
+            # Swing low: lower than 2 bars before and after
+            if (structure_data['low'].iloc[i] < structure_data['low'].iloc[i-1] and 
+                structure_data['low'].iloc[i] < structure_data['low'].iloc[i-2] and
+                structure_data['low'].iloc[i] < structure_data['low'].iloc[i+1] and
+                structure_data['low'].iloc[i] < structure_data['low'].iloc[i+2]):
+                swing_lows.append((i, structure_data['low'].iloc[i]))
+        
+        if not swing_highs or not swing_lows:
+            return None, 0
+        
+        # Get current price and recent structure levels
+        current_price = data['close'].iloc[-1]
+        recent_high = max(swing_highs, key=lambda x: x[0])[1] if swing_highs else None
+        recent_low = min(swing_lows, key=lambda x: x[0])[1] if swing_lows else None
+        
+        # Check for break above resistance (bullish BOS)
+        if recent_high and current_price > recent_high:
+            price_break = (current_price - recent_high) / recent_high
+            if price_break >= price_threshold:  # 1% threshold
+                # Check volume confirmation
+                current_volume = data['volume'].iloc[-1]
+                avg_volume = data['volume'].tail(20).mean()
+                volume_confirmed = current_volume >= (avg_volume * 1.5)
+                
+                if volume_confirmed:
+                    return "BULLISH", 2.0
+                else:
+                    return "BULLISH", 1.5
+        
+        # Check for break below support (bearish BOS)
+        if recent_low and current_price < recent_low:
+            price_break = (recent_low - current_price) / recent_low
+            if price_break >= price_threshold:  # 1% threshold
+                # Check volume confirmation
+                current_volume = data['volume'].iloc[-1]
+                avg_volume = data['volume'].tail(20).mean()
+                volume_confirmed = current_volume >= (avg_volume * 1.5)
+                
+                if volume_confirmed:
+                    return "BEARISH", 2.0
+                else:
+                    return "BEARISH", 1.5
+        
+        return None, 0
+        
+    except Exception as e:
+        logger.error(f"BOS detection error: {e}")
+        return None, 0
+
+def calculate_confidence_level(ema_signal, choch_signal, bos_signal):
+    """Calculate confidence level based on signal confirmations"""
+    try:
+        base_confidence = 3  # Base EMA crossover confidence
+        
+        # Add CHOCH confirmation
+        if choch_signal and choch_signal[0] == ema_signal[0]:  # Same direction
+            base_confidence += 1
+        
+        # Add BOS confirmation
+        if bos_signal and bos_signal[0] == ema_signal[0]:  # Same direction
+            base_confidence += 1
+        
+        # Ensure confidence is within 1-5 range
+        confidence = max(1, min(5, base_confidence))
+        
+        return confidence
+        
+    except Exception as e:
+        logger.error(f"Confidence calculation error: {e}")
+        return 3  # Default to base confidence
+
 def analyze_markets():
     """Analyze markets for real EMA crossover signals"""
     global last_analysis_time, analysis_count
@@ -163,15 +296,25 @@ def analyze_markets():
                     signal_type, strength = crossover_signal
                     current_price = market_data['close'].iloc[-1]
                     
-                    # Create detailed notification message
+                    # Enhanced analysis: CHOCH and BOS detection
+                    choch_signal = detect_choch(market_data)
+                    bos_signal = detect_bos(market_data)
+                    
+                    # Calculate confidence level
+                    confidence_level = calculate_confidence_level(
+                        crossover_signal, choch_signal, bos_signal
+                    )
+                    
+                    # Create enhanced notification message
                     message = create_signal_message(
                         symbol, signal_type, current_price, 
-                        current_ema_9, current_ema_20, strength
+                        current_ema_9, current_ema_20, strength,
+                        confidence_level, choch_signal, bos_signal
                     )
                     
                     # Send notification
                     if send_notification(message, symbol):
-                        logger.info(f"EMA crossover signal sent for {symbol}: {signal_type}")
+                        logger.info(f"Enhanced signal sent for {symbol}: {signal_type} (Confidence: {confidence_level}/5)")
                     else:
                         logger.warning(f"Failed to send signal notification for {symbol}")
                 
@@ -294,8 +437,8 @@ def detect_ema_crossover(prev_ema_9, prev_ema_20, current_ema_9, current_ema_20)
         logger.error(f"EMA crossover detection error: {e}")
         return None
 
-def create_signal_message(symbol, signal_type, price, ema_9, ema_20, strength):
-    """Create detailed signal notification message"""
+def create_signal_message(symbol, signal_type, price, ema_9, ema_20, strength, confidence_level, choch_signal=None, bos_signal=None):
+    """Create detailed signal notification message with confidence levels"""
     try:
         # Format price based on symbol type
         if symbol in CRYPTO_PAIRS:
@@ -306,30 +449,77 @@ def create_signal_message(symbol, signal_type, price, ema_9, ema_20, strength):
         # Format strength
         strength_str = f"{strength:.2f}%"
         
-        # Create message
-        message = f"🚨 {signal_type} EMA CROSSOVER SIGNAL!\n\n"
+        # Confidence level emojis
+        confidence_emojis = {
+            1: "⚠️",
+            2: "⚠️", 
+            3: "⚡",
+            4: "🔥",
+            5: "🚀"
+        }
+        
+        confidence_emoji = confidence_emojis.get(confidence_level, "⚡")
+        
+        # Create message header
+        message = f"{confidence_emoji} {signal_type} SIGNAL - CONFIDENCE {confidence_level}/5!\n\n"
         message += f"Symbol: {symbol}\n"
         message += f"Price: {price_str}\n"
-        message += f"Signal: {signal_type} EMA Crossover\n"
+        message += f"Signal Type: {signal_type} EMA Crossover\n"
         message += f"EMA 9: ${ema_9:.4f}\n"
         message += f"EMA 20: ${ema_20:.4f}\n"
-        message += f"Separation: {strength_str}\n"
+        message += f"EMA Separation: {strength_str}\n"
         message += f"Time: {datetime.now().strftime('%H:%M UTC')}\n\n"
         
-        if signal_type == "BULLISH":
-            message += "💚 BULLISH SIGNAL - EMA 9 crossed above EMA 20\n"
-            message += "💡 ACTION: Consider BUYING " + symbol
-        else:
-            message += "🔴 BEARISH SIGNAL - EMA 9 crossed below EMA 20\n"
-            message += "💡 ACTION: Consider SELLING " + symbol
+        # Add confirmation details
+        message += "📊 CONFIRMATION ANALYSIS:\n"
+        message += f"✅ EMA Crossover: {signal_type}\n"
         
-        message += f"\n\n⚠️  This is not financial advice. Always do your own research."
+        if choch_signal:
+            choch_type, choch_strength = choch_signal
+            if choch_type == signal_type:
+                message += f"✅ CHOCH: {choch_type} Momentum (Volume: {'Confirmed' if choch_strength >= 1.0 else 'Partial'})\n"
+            else:
+                message += f"⚠️ CHOCH: {choch_type} Momentum (Conflicts with signal)\n"
+        else:
+            message += "❌ CHOCH: No momentum change detected\n"
+        
+        if bos_signal:
+            bos_type, bos_strength = bos_signal
+            if bos_type == signal_type:
+                message += f"✅ BOS: {bos_type} Structure Break (Volume: {'Confirmed' if bos_strength >= 2.0 else 'Partial'})\n"
+            else:
+                message += f"⚠️ BOS: {bos_type} Structure Break (Conflicts with signal)\n"
+        else:
+            message += "❌ BOS: No structure break detected\n"
+        
+        message += f"\n🎯 CONFIDENCE BREAKDOWN:\n"
+        message += f"• Base EMA Crossover: 3/5\n"
+        if choch_signal and choch_signal[0] == signal_type:
+            message += f"• +1 CHOCH Confirmation: 4/5\n"
+        if bos_signal and bos_signal[0] == signal_type:
+            message += f"• +1 BOS Confirmation: 5/5\n"
+        
+        message += f"\n💡 ACTION RECOMMENDATION:\n"
+        if signal_type == "BULLISH":
+            message += f"💚 Consider BUYING {symbol} - {confidence_level}/5 Confidence\n"
+        else:
+            message += f"🔴 Consider SELLING {symbol} - {confidence_level}/5 Confidence\n"
+        
+        # Add risk assessment based on confidence
+        if confidence_level >= 4:
+            message += "🔥 HIGH CONFIDENCE - Strong technical confirmation\n"
+        elif confidence_level == 3:
+            message += "⚡ MEDIUM CONFIDENCE - Basic EMA signal only\n"
+        else:
+            message += "⚠️ LOW CONFIDENCE - Conflicting signals detected\n"
+        
+        message += f"\n⚠️  This is not financial advice. Always do your own research."
         
         return message
         
     except Exception as e:
         logger.error(f"Error creating signal message: {e}")
-        return f"EMA Crossover Signal: {signal_type} for {symbol}"
+        return f"EMA Crossover Signal: {signal_type} for {symbol} - Confidence {confidence_level}/5"
 
 def keep_alive_ping():
     """Keep the bot alive and prevent Render from sleeping"""
@@ -524,6 +714,63 @@ def test_analysis():
             "timestamp": datetime.now().isoformat()
         }), 500
 
+@app.route('/test-enhanced-signal')
+def test_enhanced_signal():
+    """Test enhanced signal generation with CHOCH and BOS"""
+    try:
+        logger.info("Starting enhanced signal test...")
+        
+        # Test with a sample symbol
+        test_symbol = "BTC"
+        market_data = fetch_market_data_robust(test_symbol)
+        
+        if market_data is None or len(market_data) < 50:
+            return jsonify({
+                "error": "Insufficient test data",
+                "symbol": test_symbol,
+                "data_points": len(market_data) if market_data is not None else 0
+            }), 500
+        
+        # Simulate a bullish signal for testing
+        signal_type = "BULLISH"
+        current_price = market_data['close'].iloc[-1]
+        ema_9 = 45000.0  # Simulated values
+        ema_20 = 44800.0
+        strength = 0.45
+        
+        # Get real CHOCH and BOS signals
+        choch_signal = detect_choch(market_data)
+        bos_signal = detect_bos(market_data)
+        
+        # Calculate confidence level
+        confidence_level = calculate_confidence_level(
+            (signal_type, strength), choch_signal, bos_signal
+        )
+        
+        # Create enhanced message
+        message = create_signal_message(
+            test_symbol, signal_type, current_price,
+            ema_9, ema_20, strength,
+            confidence_level, choch_signal, bos_signal
+        )
+        
+        return jsonify({
+            "message": "Enhanced signal test completed",
+            "symbol": test_symbol,
+            "signal_type": signal_type,
+            "confidence_level": confidence_level,
+            "choch_signal": choch_signal,
+            "bos_signal": bos_signal,
+            "enhanced_message": message,
+            "timestamp": datetime.now().isoformat()
+        })
+        
+    except Exception as e:
+        logger.error(f"Enhanced signal test error: {e}")
+        return jsonify({
+            "error": str(e)
+        }), 500
+
 @app.route('/webhook/ios', methods=['GET', 'POST'])
 def ios_webhook():
     """iOS webhook endpoint"""
@@ -565,6 +812,7 @@ def root():
             "/status": "Bot status",
             "/test-notification": "Test notifications",
             "/test-analysis": "Test market analysis",
+            "/test-enhanced-signal": "Test enhanced signals (CHOCH + BOS)",
             "/webhook/ios": "iOS webhook"
         },
         "timestamp": datetime.now().isoformat()
