@@ -38,6 +38,36 @@ IOS_WEBHOOK_URL = os.getenv("IOS_WEBHOOK_URL", "")
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
 
+# Render-specific configuration
+RENDER = os.getenv("RENDER", "false").lower() == "true"
+RENDER_URL = os.getenv("RENDER_EXTERNAL_URL", "")  # Set this in Render environment
+
+# Auto-detect Render URL from request headers
+def get_render_url():
+    """Auto-detect Render URL from request context"""
+    global RENDER_URL
+    
+    if RENDER_URL:
+        return RENDER_URL
+    
+    try:
+        # Try to get from request context (if available)
+        from flask import request
+        if request and hasattr(request, 'headers'):
+            # Check for common proxy headers
+            forwarded_proto = request.headers.get('X-Forwarded-Proto', '')
+            forwarded_host = request.headers.get('X-Forwarded-Host', '')
+            host = request.headers.get('Host', '')
+            
+            if forwarded_proto and forwarded_host:
+                return f"{forwarded_proto}://{forwarded_host}"
+            elif host and not host.startswith('localhost'):
+                return f"https://{host}"
+    except:
+        pass
+    
+    return ""
+
 # Market pairs to monitor
 CRYPTO_PAIRS = ["BTC", "ETH", "SOL", "XRP"]  # Simplified symbols
 FOREX_PAIRS = ["EURUSD", "USDJPY", "GBPUSD"]  # Simplified symbols
@@ -528,9 +558,18 @@ def create_signal_message(symbol, signal_type, price, ema_9, ema_20, strength, c
 def keep_alive_ping():
     """Keep the bot alive and prevent Render from sleeping"""
     try:
-        # Ping our own health endpoint to keep the service alive
-        health_url = f"http://localhost:{PORT}/health"
-        response = requests.get(health_url, timeout=5)
+        render_url = get_render_url()
+        
+        if RENDER and render_url:
+            # On Render, ping external URL
+            health_url = f"{render_url}/health"
+            logger.info(f"Render keep-alive ping to: {health_url}")
+        else:
+            # Local development, ping localhost
+            health_url = f"http://localhost:{PORT}/health"
+            logger.info(f"Local keep-alive ping to: {health_url}")
+        
+        response = requests.get(health_url, timeout=10)
         
         if response.status_code == 200:
             logger.info("Keep-alive ping successful")
@@ -621,9 +660,16 @@ def keep_alive_loop():
         
         while is_running:
             try:
-                # Ping our own health endpoint
-                health_url = f"http://localhost:{PORT}/health"
-                response = requests.get(health_url, timeout=5)
+                render_url = get_render_url()
+                
+                if RENDER and render_url:
+                    # On Render, ping external URL
+                    health_url = f"{render_url}/health"
+                else:
+                    # Local development, ping localhost
+                    health_url = f"http://localhost:{PORT}/health"
+                
+                response = requests.get(health_url, timeout=10)
                 
                 if response.status_code == 200:
                     logger.debug("Keep-alive ping successful")
@@ -641,7 +687,7 @@ def keep_alive_loop():
         # Restart the loop
         if is_running:
             time.sleep(5)
-            keep_aliveive_loop()
+            keep_alive_loop()
 
 # Flask routes
 @app.route('/health')
@@ -822,6 +868,28 @@ def ios_webhook():
         logger.error(f"iOS webhook error: {e}")
         return jsonify({"error": str(e)}), 500
 
+@app.route('/configure', methods=['POST'])
+def configure_bot():
+    """Configure bot settings"""
+    try:
+        data = request.get_json() or {}
+        global RENDER_URL
+        
+        if 'render_url' in data:
+            RENDER_URL = data['render_url']
+            logger.info(f"Render URL configured: {RENDER_URL}")
+        
+        return jsonify({
+            "message": "Configuration updated",
+            "render_url": RENDER_URL,
+            "render_detected": RENDER,
+            "timestamp": datetime.now().isoformat()
+        })
+        
+    except Exception as e:
+        logger.error(f"Configuration error: {e}")
+        return jsonify({"error": str(e)}), 500
+
 @app.route('/')
 def root():
     """Root endpoint"""
@@ -829,11 +897,14 @@ def root():
         "name": "EMA Crossover Alert Bot",
         "version": "2.0.0",
         "status": "running" if bot_initialized and is_running else "starting",
+        "render_detected": RENDER,
+        "render_url": RENDER_URL or "auto-detecting",
         "endpoints": {
             "/health": "Health check",
             "/ping": "Simple ping",
             "/initialize": "Manual initialization",
             "/status": "Bot status",
+            "/configure": "Configure bot settings",
             "/test-notification": "Test notifications",
             "/test-analysis": "Test market analysis",
             "/test-enhanced-signal": "Test enhanced signals (CHOCH + BOS)",
