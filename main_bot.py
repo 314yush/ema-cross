@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 EMA Crossover Alert Bot - Production Ready
-Simplified, robust implementation that actually works
+Bulletproof implementation that survives Gunicorn on Render
 """
 
 import os
@@ -29,6 +29,8 @@ last_analysis_time = None
 analysis_count = 0
 is_running = False
 bot_initialized = False
+initialization_attempts = 0
+max_initialization_attempts = 5
 
 # Configuration
 PORT = int(os.getenv("PORT", 8000))
@@ -42,6 +44,10 @@ FOREX_PAIRS = ["EURUSD", "USDJPY", "GBPUSD"]  # Simplified symbols
 
 # Signal cooldown (prevent spam)
 signal_cooldowns = {}
+
+# Global scheduler and thread references
+scheduler_thread = None
+keep_alive_thread = None
 
 def send_ios_notification(message):
     """Send notification to iOS Shortcuts"""
@@ -371,7 +377,7 @@ def fetch_yahoo_finance_data(symbol):
         else:
             yf_symbol = f"{symbol}=X"
         
-        # Fetch data
+        # Fetch 15-minute data for the last 7 days
         ticker = yf.Ticker(yf_symbol)
         data = ticker.history(period="7d", interval="15m")
         
@@ -399,8 +405,6 @@ def fetch_yahoo_finance_data(symbol):
     except Exception as e:
         logger.error(f"Yahoo Finance fetch error for {symbol}: {e}")
         return None
-
-
 
 def calculate_ema(data, period):
     """Calculate Exponential Moving Average"""
@@ -524,240 +528,270 @@ def create_signal_message(symbol, signal_type, price, ema_9, ema_20, strength, c
 def keep_alive_ping():
     """Keep the bot alive and prevent Render from sleeping"""
     try:
-        # Ping our own health endpoint to keep service active
+        # Ping our own health endpoint to keep the service alive
         health_url = f"http://localhost:{PORT}/health"
         response = requests.get(health_url, timeout=5)
         
         if response.status_code == 200:
-            logger.debug("Keep-alive ping successful")
+            logger.info("Keep-alive ping successful")
         else:
-            logger.warning(f"Keep-alive ping returned status {response.status_code}")
+            logger.warning(f"Keep-alive ping failed: {response.status_code}")
             
     except Exception as e:
-        logger.debug(f"Keep-alive ping failed (expected during startup): {e}")
+        logger.error(f"Keep-alive ping error: {e}")
 
 def run_scheduler():
-    """Run the scheduled tasks"""
+    """Run the scheduler in a separate thread"""
     global is_running
     
-    logger.info("Starting scheduler...")
-    
-    # Schedule tasks
-    schedule.every(15).minutes.do(analyze_markets)  # Market analysis every 15 minutes
-    schedule.every(1).minutes.do(keep_alive_ping)   # Keep-alive every minute
-    
-    is_running = True
-    logger.info("Scheduler started successfully")
-    
-    while is_running:
-        try:
+    try:
+        logger.info("Starting scheduler...")
+        
+        # Schedule market analysis every 15 minutes
+        schedule.every(15).minutes.do(analyze_markets)
+        
+        # Schedule keep-alive ping every minute
+        schedule.every(1).minutes.do(keep_alive_ping)
+        
+        logger.info("Scheduler started successfully")
+        
+        # Run the scheduler
+        while is_running:
             schedule.run_pending()
             time.sleep(1)
-        except Exception as e:
-            logger.error(f"Scheduler error: {e}")
-            time.sleep(5)
-
-def start_background_tasks():
-    """Start background tasks in separate thread"""
-    try:
-        scheduler_thread = threading.Thread(target=run_scheduler, daemon=True)
-        scheduler_thread.start()
-        logger.info("Background tasks started")
-        return True
+            
     except Exception as e:
-        logger.error(f"Failed to start background tasks: {e}")
-        return False
+        logger.error(f"Scheduler error: {e}")
+        # Try to restart scheduler
+        if is_running:
+            logger.info("Attempting to restart scheduler...")
+            time.sleep(5)
+            run_scheduler()
 
 def initialize_bot():
-    """Initialize the bot components"""
-    global bot_start_time, bot_initialized
+    """Initialize the bot with bulletproof error handling"""
+    global bot_start_time, is_running, bot_initialized, scheduler_thread, keep_alive_thread, initialization_attempts
     
     try:
+        if bot_initialized:
+            logger.info("Bot already initialized, skipping...")
+            return True
+            
         logger.info("Initializing bot...")
         
-        # Start background tasks
-        if not start_background_tasks():
-            return False
-        
+        # Set bot state
         bot_start_time = datetime.now()
+        is_running = True
         bot_initialized = True
         
+        # Start scheduler in background thread
+        if scheduler_thread is None or not scheduler_thread.is_alive():
+            scheduler_thread = threading.Thread(target=run_scheduler, daemon=True)
+            scheduler_thread.start()
+            logger.info("Scheduler thread started")
+        
+        # Start keep-alive thread as backup
+        if keep_alive_thread is None or not keep_alive_thread.is_alive():
+            keep_alive_thread = threading.Thread(target=keep_alive_loop, daemon=True)
+            keep_alive_thread.start()
+            logger.info("Keep-alive thread started")
+        
         logger.info("Bot initialized successfully")
+        initialization_attempts = 0
         return True
         
     except Exception as e:
-        logger.error(f"Bot initialization failed: {e}")
-        return False
+        logger.error(f"Bot initialization error: {e}")
+        initialization_attempts += 1
+        
+        if initialization_attempts < max_initialization_attempts:
+            logger.info(f"Retrying initialization in 5 seconds... (Attempt {initialization_attempts}/{max_initialization_attempts})")
+            time.sleep(5)
+            return initialize_bot()
+        else:
+            logger.error("Max initialization attempts reached. Bot may not function properly.")
+            return False
 
-# Flask Routes
+def keep_alive_loop():
+    """Dedicated keep-alive loop that runs independently"""
+    global is_running
+    
+    try:
+        logger.info("Starting dedicated keep-alive loop...")
+        
+        while is_running:
+            try:
+                # Ping our own health endpoint
+                health_url = f"http://localhost:{PORT}/health"
+                response = requests.get(health_url, timeout=5)
+                
+                if response.status_code == 200:
+                    logger.debug("Keep-alive ping successful")
+                else:
+                    logger.warning(f"Keep-alive ping failed: {response.status_code}")
+                    
+            except Exception as e:
+                logger.error(f"Keep-alive ping error: {e}")
+            
+            # Wait 1 minute before next ping
+            time.sleep(60)
+            
+    except Exception as e:
+        logger.error(f"Keep-alive loop error: {e}")
+        # Restart the loop
+        if is_running:
+            time.sleep(5)
+            keep_aliveive_loop()
 
+# Flask routes
 @app.route('/health')
-def health():
+def health_check():
     """Health check endpoint"""
     global bot_start_time, last_analysis_time, analysis_count, is_running, bot_initialized
     
     try:
-        health_status = {
-            "status": "healthy" if bot_initialized and is_running else "starting",
+        uptime = (datetime.now() - bot_start_time).total_seconds() if bot_start_time else 0
+        
+        return jsonify({
+            "status": "healthy" if bot_initialized and is_running else "unhealthy",
             "initialized": bot_initialized,
             "running": is_running,
-            "uptime_seconds": int((datetime.now() - bot_start_time).total_seconds()) if bot_start_time else 0,
+            "uptime_seconds": int(uptime),
             "last_analysis": last_analysis_time.isoformat() if last_analysis_time else None,
             "analysis_count": analysis_count,
             "timestamp": datetime.now().isoformat()
-        }
-        
-        return jsonify(health_status)
+        })
         
     except Exception as e:
         logger.error(f"Health check error: {e}")
-        return jsonify({"status": "error", "error": str(e)}), 500
+        return jsonify({"error": str(e)}), 500
 
 @app.route('/ping')
 def ping():
     """Simple ping endpoint"""
-    return jsonify({
-        "message": "pong",
-        "timestamp": datetime.now().isoformat(),
-        "status": "alive"
-    })
+    return jsonify({"message": "pong", "timestamp": datetime.now().isoformat()})
 
 @app.route('/initialize')
 def manual_initialize():
-    """Manually initialize the bot"""
-    global bot_initialized
-    
-    if bot_initialized:
-        return jsonify({
-            "message": "Bot already initialized",
-            "status": "ready"
-        })
-    
-    if initialize_bot():
-        return jsonify({
-            "message": "Bot initialized successfully",
-            "status": "initialized"
-        })
-    else:
-        return jsonify({
-            "message": "Bot initialization failed",
-            "status": "failed"
-        }), 500
-
-@app.route('/status')
-def status():
-    """Get bot status"""
-    global bot_start_time, last_analysis_time, analysis_count, is_running, bot_initialized
-    
-    status_info = {
-        "bot_info": {
-            "initialized": bot_initialized,
-            "running": is_running,
-            "start_time": bot_start_time.isoformat() if bot_start_time else None,
-            "uptime_seconds": int((datetime.now() - bot_start_time).total_seconds()) if bot_start_time else 0
-        },
-        "market_analysis": {
-            "last_analysis": last_analysis_time.isoformat() if last_analysis_time else None,
-            "analysis_count": analysis_count,
-            "next_analysis_in": "15 minutes" if is_running else "not scheduled"
-        },
-        "monitoring": {
-            "crypto_pairs": CRYPTO_PAIRS,
-            "forex_pairs": FOREX_PAIRS,
-            "total_pairs": len(CRYPTO_PAIRS) + len(FOREX_PAIRS)
-        },
-        "notifications": {
-            "ios_configured": bool(IOS_WEBHOOK_URL),
-            "telegram_configured": bool(TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID)
-        },
-        "timestamp": datetime.now().isoformat()
-    }
-    
-    return jsonify(status_info)
-
-@app.route('/test-notification')
-def test_notification():
-    """Test notification system"""
-    test_message = f"🧪 TEST NOTIFICATION\n\nThis is a test message from your EMA Crossover Bot.\nTime: {datetime.now().strftime('%H:%M:%S UTC')}\n\nIf you see this, notifications are working! 🎉"
-    
-    ios_sent = send_ios_notification(test_message)
-    telegram_sent = send_telegram_notification(test_message)
-    
-    return jsonify({
-        "message": "Test notification sent",
-        "ios_sent": ios_sent,
-        "telegram_sent": telegram_sent,
-        "timestamp": datetime.now().isoformat()
-    })
-
-@app.route('/test-analysis')
-def test_analysis():
-    """Test market analysis and EMA crossover detection"""
+    """Manual initialization endpoint"""
     try:
-        logger.info("Manual analysis test requested")
-        
-        # Run a single analysis cycle
-        analyze_markets()
-        
+        success = initialize_bot()
         return jsonify({
-            "message": "Market analysis test completed",
-            "analysis_count": analysis_count,
-            "last_analysis": last_analysis_time.isoformat() if last_analysis_time else None,
+            "message": "Bot initialization",
+            "success": success,
             "timestamp": datetime.now().isoformat()
         })
         
     except Exception as e:
-        logger.error(f"Analysis test failed: {e}")
+        logger.error(f"Manual initialization error: {e}")
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/status')
+def status():
+    """Bot status endpoint"""
+    global bot_start_time, last_analysis_time, analysis_count, is_running, bot_initialized
+    
+    try:
+        uptime = (datetime.now() - bot_start_time).total_seconds() if bot_start_time else 0
+        
         return jsonify({
-            "message": "Analysis test failed",
-            "error": str(e),
+            "status": "running" if bot_initialized and is_running else "stopped",
+            "initialized": bot_initialized,
+            "running": is_running,
+            "uptime_seconds": int(uptime),
+            "last_analysis": last_analysis_time.isoformat() if last_analysis_time else None,
+            "analysis_count": analysis_count,
+            "scheduler_thread_alive": scheduler_thread.is_alive() if scheduler_thread else False,
+            "keep_alive_thread_alive": keep_alive_thread.is_alive() if keep_alive_thread else False,
             "timestamp": datetime.now().isoformat()
-        }), 500
+        })
+        
+    except Exception as e:
+        logger.error(f"Status check error: {e}")
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/test-notification')
+def test_notification():
+    """Test notification endpoint"""
+    try:
+        test_message = f"🧪 Test notification from EMA Crossover Bot\nTime: {datetime.now().strftime('%H:%M UTC')}\nStatus: Bot is working!"
+        
+        ios_sent = send_ios_notification(test_message)
+        telegram_sent = send_telegram_notification(test_message)
+        
+        return jsonify({
+            "message": "Test notification sent",
+            "ios_sent": ios_sent,
+            "telegram_sent": telegram_sent,
+            "timestamp": datetime.now().isoformat()
+        })
+        
+    except Exception as e:
+        logger.error(f"Test notification error: {e}")
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/test-analysis')
+def test_analysis():
+    """Test market analysis endpoint"""
+    try:
+        logger.info("Manual analysis test requested")
+        analyze_markets()
+        
+        return jsonify({
+            "message": "Market analysis completed",
+            "timestamp": datetime.now().isoformat()
+        })
+        
+    except Exception as e:
+        logger.error(f"Test analysis error: {e}")
+        return jsonify({"error": str(e)}), 500
 
 @app.route('/test-enhanced-signal')
 def test_enhanced_signal():
-    """Test enhanced signal generation with CHOCH and BOS"""
+    """Test enhanced signal generation with CHOCH + BOS"""
     try:
         logger.info("Starting enhanced signal test...")
         
-        # Test with a sample symbol
-        test_symbol = "BTC"
-        market_data = fetch_market_data_robust(test_symbol)
+        # Test with BTC data
+        symbol = "BTC"
+        market_data = fetch_market_data_robust(symbol)
         
-        if market_data is None or len(market_data) < 50:
-            return jsonify({
-                "error": "Insufficient test data",
-                "symbol": test_symbol,
-                "data_points": len(market_data) if market_data is not None else 0
-            }), 500
+        if market_data is None:
+            return jsonify({"error": "Failed to fetch market data"}), 500
         
-        # Simulate a bullish signal for testing
-        signal_type = "BULLISH"
+        # Calculate EMAs
+        ema_9 = calculate_ema(market_data, 9)
+        ema_20 = calculate_ema(market_data, 20)
+        
+        if ema_9 is None or ema_20 is None:
+            return jsonify({"error": "Failed to calculate EMAs"}), 500
+        
+        # Simulate a bullish signal
         current_price = market_data['close'].iloc[-1]
-        ema_9 = 45000.0  # Simulated values
-        ema_20 = 44800.0
-        strength = 0.45
+        current_ema_9 = ema_9[-1]
+        current_ema_20 = ema_20[-1]
+        strength = abs(current_ema_9 - current_ema_20) / current_ema_20 * 100
         
-        # Get real CHOCH and BOS signals
+        # Detect CHOCH and BOS
         choch_signal = detect_choch(market_data)
         bos_signal = detect_bos(market_data)
         
-        # Calculate confidence level
+        # Calculate confidence
         confidence_level = calculate_confidence_level(
-            (signal_type, strength), choch_signal, bos_signal
+            ("BULLISH", strength), choch_signal, bos_signal
         )
         
         # Create enhanced message
         message = create_signal_message(
-            test_symbol, signal_type, current_price,
-            ema_9, ema_20, strength,
+            symbol, "BULLISH", current_price,
+            current_ema_9, current_ema_20, strength,
             confidence_level, choch_signal, bos_signal
         )
         
         return jsonify({
             "message": "Enhanced signal test completed",
-            "symbol": test_symbol,
-            "signal_type": signal_type,
+            "symbol": symbol,
+            "signal_type": "BULLISH",
             "confidence_level": confidence_level,
             "choch_signal": choch_signal,
             "bos_signal": bos_signal,
@@ -767,23 +801,13 @@ def test_enhanced_signal():
         
     except Exception as e:
         logger.error(f"Enhanced signal test error: {e}")
-        return jsonify({
-            "error": str(e)
-        }), 500
+        return jsonify({"error": str(e)}), 500
 
-@app.route('/webhook/ios', methods=['GET', 'POST'])
+@app.route('/webhook/ios', methods=['POST'])
 def ios_webhook():
-    """iOS webhook endpoint"""
-    if request.method == 'GET':
-        return jsonify({
-            "message": "iOS webhook active",
-            "status": "ready",
-            "timestamp": datetime.now().isoformat()
-        })
-    
-    # Handle POST request
+    """iOS Shortcuts webhook endpoint"""
     try:
-        data = request.get_json() or {}
+        data = request.get_json()
         message = data.get('message', 'Trading signal received')
         
         success = send_ios_notification(message)
@@ -818,15 +842,41 @@ def root():
         "timestamp": datetime.now().isoformat()
     })
 
-# Initialize bot on first request
+# Bulletproof initialization - multiple fallback mechanisms
 @app.before_request
 def check_and_initialize():
-    """Check and initialize bot before each request"""
-    global bot_initialized
-    if not bot_initialized:
-        logger.info("Bot not initialized, starting initialization...")
-        initialize_bot()
+    """Check and initialize bot before each request with multiple fallbacks"""
+    global bot_initialized, initialization_attempts
+    
+    try:
+        # First fallback: Check if bot is initialized
+        if not bot_initialized:
+            logger.info("Bot not initialized, starting initialization...")
+            initialize_bot()
+        
+        # Second fallback: Check if background threads are alive
+        if bot_initialized and (scheduler_thread is None or not scheduler_thread.is_alive()):
+            logger.warning("Scheduler thread dead, restarting...")
+            initialize_bot()
+        
+        # Third fallback: Check if keep-alive thread is alive
+        if bot_initialized and (keep_alive_thread is None or not keep_alive_thread.is_alive()):
+            logger.warning("Keep-alive thread dead, restarting...")
+            initialize_bot()
+        
+        # Fourth fallback: Force re-initialization if too many failures
+        if initialization_attempts >= max_initialization_attempts:
+            logger.error("Too many initialization failures, forcing restart...")
+            bot_initialized = False
+            initialization_attempts = 0
+            initialize_bot()
+            
+    except Exception as e:
+        logger.error(f"Initialization check error: {e}")
+        # Don't let initialization errors crash the request
 
+# Initialize bot on startup
 if __name__ == "__main__":
     logger.info("Starting EMA Crossover Bot...")
+    initialize_bot()
     app.run(host='0.0.0.0', port=PORT, debug=False)
