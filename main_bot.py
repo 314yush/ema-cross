@@ -42,6 +42,12 @@ TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
 RENDER = os.getenv("RENDER", "false").lower() == "true"
 RENDER_URL = os.getenv("RENDER_EXTERNAL_URL", "")  # Set this in Render environment
 
+# External keep-alive services (free)
+EXTERNAL_PING_URLS = [
+    "https://api.uptimerobot.com/v2/getMonitors",  # UptimeRobot API
+    "https://httpbin.org/get",  # Simple HTTP test
+]
+
 # Auto-detect Render URL from request headers
 def get_render_url():
     """Auto-detect Render URL from request context"""
@@ -564,6 +570,14 @@ def keep_alive_ping():
             # On Render, ping external URL
             health_url = f"{render_url}/health"
             logger.info(f"Render keep-alive ping to: {health_url}")
+            
+            # Also ping external services to generate traffic
+            for ping_url in EXTERNAL_PING_URLS:
+                try:
+                    requests.get(ping_url, timeout=5)
+                    logger.debug(f"External ping successful: {ping_url}")
+                except:
+                    pass  # Ignore external ping failures
         else:
             # Local development, ping localhost
             health_url = f"http://localhost:{PORT}/health"
@@ -890,6 +904,26 @@ def configure_bot():
         logger.error(f"Configuration error: {e}")
         return jsonify({"error": str(e)}), 500
 
+@app.route('/wake-up', methods=['GET', 'POST'])
+def wake_up():
+    """Wake up the bot and trigger immediate analysis"""
+    try:
+        logger.info("Wake-up request received - triggering immediate analysis")
+        
+        # Trigger immediate market analysis
+        analyze_markets()
+        
+        return jsonify({
+            "message": "Bot awakened successfully",
+            "status": "running" if bot_initialized and is_running else "starting",
+            "render_detected": RENDER,
+            "timestamp": datetime.now().isoformat()
+        })
+        
+    except Exception as e:
+        logger.error(f"Wake-up error: {e}")
+        return jsonify({"error": str(e)}), 500
+
 @app.route('/')
 def root():
     """Root endpoint"""
@@ -905,6 +939,7 @@ def root():
             "/initialize": "Manual initialization",
             "/status": "Bot status",
             "/configure": "Configure bot settings",
+            "/wake-up": "Wake up bot and trigger analysis",
             "/test-notification": "Test notifications",
             "/test-analysis": "Test market analysis",
             "/test-enhanced-signal": "Test enhanced signals (CHOCH + BOS)",
